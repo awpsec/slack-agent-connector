@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="description" content="Connect a Slack identity to your agent sessions and choose when each teammate wakes up.">
+  <title>Slack Agent · Settings</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/settings.css">
+  <script type="module" src="/settings.js"></script>
+</head>
+<body>
+  <header><a class="brand" href="/settings">Slack Agent <span>Connector</span></a><span id="connection-badge" class="badge">Settings</span></header>
+  <main>
+    <section id="signin" class="panel narrow" hidden>
+      <p class="eyebrow">YOUR SLACK TEAMMATE</p><h1>Open your connector settings</h1>
+      <p>Ask your agent to use <code>slack_setup</code>, or run the settings command below. It gives you a private sign in link that lasts five minutes.</p>
+      <pre>node bin/slack-agent.mjs settings</pre><p id="signin-error" role="alert"></p>
+    </section>
+    <div id="app" hidden>
+      <div class="intro"><div><p class="eyebrow">EVENTS IN. TEAMMATE ON.</p><h1>A session with a seat in Slack.</h1><p id="identity-summary">Connect Slack, choose a session, and decide when it joins the conversation.</p></div><button id="pause" class="secondary" type="button">Pause monitoring</button></div>
+      <nav aria-label="Connector settings"><button type="button" data-tab="profiles" aria-current="page">Profiles</button><button type="button" data-tab="connection">Slack account</button><button type="button" data-tab="activity">Delivery activity</button></nav>
+      <section id="profiles" class="tab">
+        <div class="workspace">
+          <aside><div class="section-title"><h2>Teammate profiles</h2><button id="new-profile" type="button" class="small">New</button></div><div id="profile-list"></div><p class="hint">Each profile targets one persistent session. Your harness keeps its tools and connectors.</p></aside>
+          <div class="panel"><form id="profile-form">
+            <div class="section-title"><h2 id="profile-heading">Create a teammate</h2><label class="toggle"><input id="enabled" type="checkbox" checked> Enabled</label></div>
+            <div class="grid"><label>Profile name<input id="profile-name" required maxlength="80" placeholder="Sandor"></label><label>Harness<select id="adapter-type"><option value="webhook">Any harness · Webhook</option><option value="command">Any harness · Command</option><option value="claude">Claude Code</option><option value="codex">Codex</option><option value="pi">pi</option><option value="omp">omp</option></select></label></div>
+            <div id="webhook-fields" class="grid"><label>Harness webhook URL<input id="harness-url" type="url" placeholder="https://your-harness.example/events"></label><label>Webhook bearer token <span class="muted">optional</span><input id="harness-token" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved token"></label></div>
+            <div id="local-fields" hidden><label>Working directory<input id="harness-cwd" placeholder="/absolute/path/to/project"></label><div id="command-fields" class="grid"><label>Executable<input id="harness-command" placeholder="/path/to/your/harness-bridge"></label><label>Arguments as a JSON array<input id="harness-args" value="[]" placeholder='["--profile", "sandor"]'></label></div></div>
+            <label>Session or thread ID <span class="muted">optional</span><input id="session-id" maxlength="200" placeholder="Use an existing session, or let the harness create one"></label>
+            <p class="hint">A new session ID returned by your harness is saved here. Cloud or local, the harness owns its environment, credentials, and tools.</p>
+            <label>Teammate instructions<textarea id="instructions" rows="4" maxlength="16000" placeholder="You are Sandor. Help the team with questions in your area. Reply when addressed or when you can contribute; otherwise stay silent."></textarea></label>
+            <div class="section-title"><div><h3>Channel behavior</h3><p class="hint">A channel rule overrides the workspace rule. Off always stays quiet.</p></div><button id="add-rule" type="button" class="small">Add rule</button></div>
+            <div id="rules"></div><datalist id="channels"></datalist><button id="load-channels" type="button" class="text-button">Load Slack channels</button>
+            <p class="hint">Every message wakes the session. Use channel instructions such as “Only reply when this concerns you” to let it decide whether to answer. Replies are followed in threads this connector has joined.</p>
+            <div class="actions"><button id="save-profile" type="submit">Save profile</button><button id="start-session" type="button" class="secondary" hidden>Create session now</button><button id="delete-profile" type="button" class="danger" hidden>Remove profile</button></div>
+          </form></div>
+        </div>
+      </section>
+      <section id="connection" class="tab" hidden>
+        <div class="connection-grid"><div class="panel"><h2>Connect the Slack identity</h2><p>Use a Slack app bot token, or a user OAuth token for a dedicated teammate account such as Sandor. Replies use the connected identity.</p>
+          <form id="connection-form"><label>Slack OAuth token<input id="slack-token" type="password" autocomplete="new-password" placeholder="xoxb… or xoxp…"></label><label>App signing secret<input id="signing-secret" type="password" autocomplete="new-password" placeholder="Slack app → Basic Information"></label><label>Slack app ID <span class="muted">optional</span><input id="app-id" placeholder="A…"></label><button type="submit">Save Slack connection</button></form><p class="hint">Saved secrets are never returned to the settings page or agent tools. Blank fields keep the saved credentials.</p><button id="disconnect" type="button" class="danger">Disconnect Slack</button>
+        </div><div class="panel"><h2>Your event webhook</h2><p>Slack delivers new messages here as they happen. No scheduled checks of Slack are needed.</p><form id="public-url-form"><label>Public HTTPS base URL<input id="public-url" type="url" placeholder="https://slack.your-domain.example"></label><button type="submit" class="secondary">Save public URL</button></form><p class="hint">Point your reverse proxy or tunnel at this receiver. Use a dedicated hostname with no path prefix.</p><label>Slack Events API request URL<input id="event-url" readonly></label><div class="actions"><button id="copy-webhook" type="button" class="secondary">Copy webhook</button><button id="manifest" type="button" class="text-button">Download app manifest</button></div><p id="public-warning" class="notice">Set a public HTTPS URL before enabling Slack event delivery.</p><p class="hint">In your Slack app, enable Event Subscriptions and use this request URL. Apply the manifest scopes and events, then reinstall the app if its scopes changed.</p><p class="hint" id="scope-note"></p></div></div>
+      </section>
+      <section id="activity" class="tab" hidden><div class="panel"><div class="section-title"><div><h2>Delivery activity</h2><p class="hint">Events, harness runs, and Slack replies. Editing a profile cancels its pending deliveries.</p></div><button id="refresh" type="button" class="secondary">Refresh</button></div><div id="deliveries"></div></div></section>
+    </div>
+    <div id="notice" role="status" aria-live="polite" hidden></div>
+  </main>
+</body>
+</html>
