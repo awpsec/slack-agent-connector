@@ -4,7 +4,7 @@ Last checked: 2026-11-05. These results describe this checkout's checks, not a g
 
 ## Automated checks
 
-`npm test` runs offline. Slack API responses and native model output are fixtures. No automated test sends real Slack messages or starts a model.
+All 59 tests and `npm run check` passed for v0.2.0. `npm test` runs offline. Slack API responses and native model output are fixtures. No automated test sends real Slack messages or starts a model.
 
 Coverage includes signed HTTP ingestion and URL verification; mention/channel/DM rules; self/bot filtering; durable deduplication; an actual stdio MCP client; native extension schemas; installer configuration preservation; fixed and scoped session binding; distinct thread/channel contexts; account changes; no-op edits; migration from v0.1; ordered retries; callback races, expiry and duplicate results; cancellation; rate limits; uncertain sends; and interrupted-worker recovery.
 
@@ -15,8 +15,10 @@ A command-bridge integration check launches actual child processes with disk-bac
 | Check | Result |
 | --- | --- |
 | Existing Slack connection posts and reads a dedicated private test thread | Passed |
+| Fresh public GitHub checkout installs dependencies and begins generic MCP setup | Passed; one-time login, repeat installation, graceful stop, and restart also checked |
 | Two new native Codex sessions retain different random markers on independent resume | Passed |
 | Native Claude Code creates a persistent session and recalls a random marker on resume | Passed; session ID retained |
+| Signed HTTP requests wake real Codex sessions through the receiver and native adapter | Passed with synthetic Slack events and captured output; two thread markers recalled after receiver restart, with distinct session IDs preserved |
 | Native Codex invokes an existing Context7 MCP tool | Passed |
 | Resumed native Codex reads the private thread using the existing Slack app connector and retrieves a marker absent from its prompt | Passed |
 | Resumed native Codex posts one reply through that Slack connector containing both the thread marker and its original session marker | Passed; confirmed by reading the actual Slack thread |
