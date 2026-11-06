@@ -19,13 +19,17 @@ export function validateUrl(value, { publicOnly = false } = {}) {
 }
 export function validateAgent(input, previous) {
   requireValue(input && typeof input === 'object' && !Array.isArray(input), 'Provide an assignment.');
-  const allowed = ['id', 'name', 'enabled', 'instructions', 'session_id', 'adapter', 'rules'];
+  const allowed = ['id', 'name', 'enabled', 'instructions', 'session_id', 'session_scope', 'reset_session', 'adapter', 'rules'];
   requireValue(Object.keys(input).every(k => allowed.includes(k)), 'Unknown assignment field.');
   requireValue(typeof input.name === 'string' && input.name.trim() && input.name.length <= 80, 'Give the assignment a short name.');
   requireValue(typeof input.instructions === 'string' && input.instructions.length <= 16000, 'Instructions must be at most 16000 characters.');
   requireValue(typeof input.enabled === 'boolean', 'Set enabled to true or false.');
+  requireValue(input.reset_session === undefined || typeof input.reset_session === 'boolean', 'Set reset_session to true only to clear an existing profile session.');
   requireValue(typeof input.session_id === 'string' && input.session_id.length <= 200 && !/[\r\n\0]/.test(input.session_id), 'Use a valid session ID.');
   requireValue(!input.session_id.startsWith('-'), 'Session IDs cannot begin with a dash.');
+  const sessionScope = input.session_scope || 'profile';
+  requireValue(['profile', 'channel', 'thread'].includes(sessionScope), 'Choose a session per profile, channel, or thread.');
+  requireValue(sessionScope === 'profile' || !input.session_id, 'Leave the session ID empty for automatic channel or thread sessions.');
   requireValue(Array.isArray(input.rules) && input.rules.length > 0 && input.rules.length <= 64, 'Add between one and 64 channel rules.');
   const seen = new Set();
   const rules = input.rules.map(rule => {
@@ -49,6 +53,14 @@ export function validateAgent(input, previous) {
   } else {
     requireValue(typeof a.cwd === 'string' && isAbsolute(a.cwd) && !a.cwd.includes('\0'), 'Choose an absolute working directory.');
     adapter.cwd = a.cwd;
+    if (a.type !== 'command' && a.args !== undefined) {
+      requireValue(Array.isArray(a.args) && a.args.length <= 64 && a.args.every(v => typeof v === 'string' && v.length <= 4096 && !v.includes('\0')), 'Harness arguments must be an array of strings.');
+      const reserved = new Set(['--', '--session', '--session-id', '--resume', '--continue', '--restore', '--fork', '--fork-session', '--mode', '--print', '--output-format', '--json-schema', '--json', '--output-schema', '--output-last-message', '--ephemeral']);
+      if (a.type === 'claude') for (const flag of ['-p','-c']) reserved.add(flag);
+      if (['pi','omp'].includes(a.type)) for (const flag of ['-p','-r','-c','--no-session']) reserved.add(flag);
+      requireValue(!a.args.some(v => reserved.has(v.split('=')[0])), 'The connector manages session and output flags. Use additional arguments only for harness configuration.');
+      adapter.args = a.args;
+    }
     if (a.type === 'command') {
       requireValue(typeof a.command === 'string' && a.command.trim() && a.command.length <= 4096 && !a.command.includes('\0'), 'Choose an executable.');
       requireValue(Array.isArray(a.args) && a.args.length <= 64 && a.args.every(v => typeof v === 'string' && v.length <= 4096 && !v.includes('\0')), 'Command arguments must be an array of strings.');
@@ -57,7 +69,7 @@ export function validateAgent(input, previous) {
     }
   }
   return { id: previous?.id ?? randomUUID(), name: input.name.trim(), enabled: input.enabled,
-    instructions: input.instructions, session_id: input.session_id, adapter, rules, revision: randomUUID() };
+    instructions: input.instructions, session_id: input.session_id, session_scope: sessionScope, adapter, rules, revision: randomUUID() };
 }
 export function normalizeEvent(payload, identity) {
   if (!identity || payload.type !== 'event_callback' || payload.team_id !== identity.team_id) return null;

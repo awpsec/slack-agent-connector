@@ -1,6 +1,6 @@
 {
   "name": "slack-agent-connector",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/awpsec/slack-agent-connector.git" },
   "homepage": "https://github.com/awpsec/slack-agent-connector#readme",
@@ -12,7 +12,7 @@
   "bin": { "slack-agent": "bin/slack-agent.mjs" },
   "pi": { "extensions": ["./extensions/pi.js"] },
   "omp": { "extensions": ["./extensions/omp.js"] },
-  "files": ["bin/", "src/", "extensions/", "public/", "docs/", "INSTALL.md", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"],
+  "files": ["bin/", "src/", "extensions/", "public/", "docs/", "INSTALL.md", "README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"],
   "peerDependencies": { "@sinclair/typebox": "*" },
   "peerDependenciesMeta": { "@sinclair/typebox": { "optional": true } },
   "scripts": {

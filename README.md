@@ -78,7 +78,7 @@ Then ask your agent:
 
 The agent calls `slack_setup`, discovers channels with `slack_channels`, and saves the requested session target and rules with `slack_assignment_save`. Secrets go in the settings form. The tools never return stored Slack tokens, signing secrets, or harness bearer tokens.
 
-The settings page exposes the same profiles, session IDs, instructions, channel overrides, pause controls, and delivery history. MCP gives the harness a settings link; it does not install a new native settings panel inside the host application.
+The settings page exposes the same profiles, session scopes and IDs, instructions, channel overrides, pause controls, and delivery history. MCP gives the harness a settings link; it does not install a new native settings panel inside the host application.
 
 ## Native pi and omp tools
 
@@ -102,16 +102,26 @@ The settings page refreshes its own delivery status; this does not query Slack f
 
 ## A profile binds identity, session, and channel behavior
 
-Choose a harness webhook, a JSON command, or a local Claude Code/Codex/pi/omp adapter. Set an existing session/thread ID, or leave it empty and let the harness return a new one. **Create session now** and `slack_session_start` dispatch `session.create`; a successful response binds the returned session ID before any Slack message arrives. An unbound profile may also acquire its session ID from its first message response.
+Choose a harness webhook, a JSON command, or a local Claude Code/Codex/pi/omp adapter. Then choose how conversations share context:
 
-The same session receives later events across that profile's channels. It can use the connectors and tools already configured in its harness. The connector does not copy those credentials or recreate those tools. Local convenience adapters inherit the CLI's existing configuration and authorization; they do not bypass permission checks. A cloud session must be continued through its harness's webhook/command bridge; a local CLI adapter cannot resume an arbitrary cloud session by ID.
+| Session scope | Context boundary |
+| --- | --- |
+| Profile (default) | One session across the profile's channels and threads |
+| Channel | A separate persistent session for each channel or DM |
+| Thread | A separate persistent session for each Slack thread |
+
+For **Profile**, set an existing session/thread ID, or leave it empty and let the harness return a new one. **Create session now** and `slack_session_start` dispatch `session.create`; a successful response binds the returned session ID before any Slack message arrives. An unbound profile may also acquire its session ID from its first message response. Channel and thread scopes create and save their sessions on the first matching message. Settings shows those conversation bindings; receiver restarts preserve them.
+
+Each later event resumes the session selected by that scope. It can use the connectors and tools already configured in its harness. The connector does not copy those credentials or recreate those tools. Local convenience adapters inherit the CLI's existing configuration and authorization; they do not bypass permission checks. Optional harness arguments can select a native profile or settings file; session and output flags are managed by the connector. A cloud session must be continued through its harness's webhook/command bridge; a local CLI adapter cannot resume an arbitrary cloud session by ID.
+
+Changing channel instructions preserves session bindings. Changing the adapter or session scope clears automatic bindings. Replacing the connected Slack identity pauses its profiles and clears their bindings, so another account cannot inherit their conversation context. Separate named receivers remain the way to run multiple Slack identities simultaneously.
 
 | Behavior | When the session wakes |
 | --- | --- |
 | Off | Never |
 | Every message | Each new human message |
 | Mentions only | A literal Slack mention of the connected identity |
-| Mentions and replies | A mention, or a reply in a thread this connector has participated in |
+| Mentions and replies | A mention, or a reply in a thread this teammate profile has participated in |
 
 A channel-specific rule overrides the workspace rule, including **Off**. DMs have a separate rule. Each rule can add channel instructions. To answer when relevant, choose **Every message**, add that instruction, and have the harness return `{"reply":null}` when it should stay silent. Relevance is a model decision; a name written as plain text is not a literal Slack mention.
 
@@ -133,9 +143,11 @@ The JSON interface is harness-independent. Native session creation, resumption, 
 
 Matching events are stored in SQLite before Slack receives an acknowledgement. A message's workspace/channel/timestamp is its durable identity, deduplicating Slack retries and overlapping `message`/`app_mention` events. Busy sessions queue work. Profiles targeting the same known session are serialized within one receiver; the harness must coordinate other callers of that session.
 
-HTTP dispatch failures retry up to three times with the same delivery ID. Harness bridges must use it as an idempotency key, including across connector restarts. Failed or interrupted local command/CLI runs require an explicit retry because the process may already have used its harness tools. A saved reply is retried after a Slack rate limit without another model run. A timeout or interrupted process during a Slack post is marked **uncertain**, because Slack may already have accepted the message. Check Slack before using the explicit retry control.
+Transient HTTP dispatch failures retry up to three times with the same delivery ID. Invalid responses and permanent HTTP errors require intervention. Harness bridges must use the delivery ID as an idempotency key, including across connector restarts. Failed or interrupted local command/CLI runs require an explicit retry because the process may already have used its harness tools. A saved reply is retried after a Slack rate limit without another model run. A timeout or interrupted process during a Slack post is marked **uncertain**, because Slack may already have accepted the message. Check Slack before using the explicit retry control.
 
-Pause, profile edits, removal, and account replacement cancel pending events, including late callbacks. A Slack API request already submitted when a setting changes cannot be recalled. Resume processes new events and does not scan history. Async callbacks expire after 30 minutes. Old deliveries and their deduplication records are retained in this initial version; apply an operational retention policy for a long-running high-volume installation.
+Messages keep their order within a session, including during retry backoff. Failed or uncertain deliveries block later work for that conversation until you **Retry** or **Dismiss** them in settings. Other sessions can continue. The connector rejects a changed session ID when resuming, and rejects reuse of one returned ID across separate automatically scoped conversations.
+
+Pause, material profile edits, removal, and account replacement cancel pending events, including late callbacks. Saving unchanged settings or refreshing credentials for the same identity preserves pending work. A Slack API request already submitted when a setting changes cannot be recalled. Resume processes new events and does not scan history. Async callbacks expire after 30 minutes; repeating an already accepted identical result acknowledges it without reposting. Old deliveries and their deduplication records are retained; apply an operational retention policy for a long-running high-volume installation.
 
 Credentials and event data are stored in the private data directory, with owner-only filesystem permissions. Bind to localhost behind an HTTPS proxy. The generated callback address must be reachable by the harness; remote harnesses need the public base URL. There is no hosted receiver, Slack app provisioning service, or OAuth app registration bundled into this checkout.
 
@@ -146,11 +158,19 @@ npm test
 npm run check
 ```
 
-Tests exercise installation plans, MCP registration preservation, native extension schemas, private setup, signed HTTP ingestion, an actual stdio MCP client, synchronous and asynchronous harness responses, session binding, pause/edit races, durable deduplication and restart recovery. They use fake Slack responses and do not send real Slack messages or start paid model runs. The browser flow was also checked with a test identity and a local command bridge. Native model output parsers are tested with representative JSON events; live model/authentication behavior requires a smoke test in the user's installation.
+The automated suite exercises installation, MCP and extension interfaces, signed ingestion, context routing, retry ordering, callbacks, migrations, account isolation, and restart recovery. It includes a real child-process bridge with persistent test memory and a local service; Slack and model responses remain fixtures. It never sends real Slack messages or starts paid model runs.
+
+Separate manual checks used real Codex sessions to confirm independent context recall and access to existing MCP and Slack connectors, including an actual Slack thread reply. Claude Code passed a real session creation/resume recall check. Desktop and mobile settings flows were checked in a browser. See [validation evidence and limits](docs/validation.md) for the exact coverage; automatic delivery from Slack's live Events API and each harness's authentication still need installation-specific checks.
 
 ## Remove or change an installation
 
 Use your harness's MCP removal command or package manager to remove the integration. This does not delete your profile data or stop a separately running receiver. Stop that receiver when retiring a Slack identity. Keep profile data if you want to reinstall and retain rules, queue history, and credentials.
+
+```sh
+node bin/slack-agent.mjs stop --profile sandor
+```
+
+After updating this checkout, re-run installation. It can restart an idle receiver that supports graceful shutdown. Resolve pending work before upgrading. A v0.1 receiver must first be stopped through the terminal or process manager that started it; the installer reports this rather than silently leaving old code running.
 
 Install another isolated identity with the same prompt and a requested `--profile` name. Existing client settings and connector profiles remain intact.
 

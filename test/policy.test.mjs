@@ -43,3 +43,9 @@ test('validation rejects ambiguous rules, unsupported URLs and command/session i
   assert.deepEqual(verifyAdapterReply({reply:'  ',session_id:'s123'}),{reply:null,session_id:'s123'});
   assert.throws(() => verifyAdapterReply({reply:'x'.repeat(12001)}));
 });
+test('conversation scope and native configuration flags preserve the connector session contract',()=>{
+  assert.throws(()=>validateAgent(agentInput({session_scope:'thread',session_id:'shared'})),/Leave the session ID empty/);
+  assert.throws(()=>validateAgent(agentInput({adapter:{type:'codex',cwd:'/tmp',args:['--ephemeral']}})),/session and output flags/);
+  assert.throws(()=>validateAgent(agentInput({adapter:{type:'claude',cwd:'/tmp',args:['-c']}})),/session and output flags/);
+  const a=validateAgent(agentInput({adapter:{type:'codex',cwd:'/tmp',args:['--profile','work']}}));assert.deepEqual(a.adapter.args,['--profile','work']);
+});

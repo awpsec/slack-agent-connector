@@ -56,7 +56,7 @@ test('any remote harness can accept a wake-up and complete it asynchronously',as
   const complete=(token=received.callback.token)=>fetch(received.callback.url,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:'{"reply":"Sent by my existing harness session."}'});
   assert.equal((await complete('wrong-token')).status,401);
   assert.equal((await complete()).status,200);await eventually(()=>slack.posts.length===1);
-  assert.equal((await complete()).status,400);assert.equal(slack.posts[0].text,'Sent by my existing harness session.');
+  const duplicate=await complete();assert.equal(duplicate.status,200);assert.equal((await duplicate.json()).duplicate,true);assert.equal(slack.posts.length,1);assert.equal(slack.posts[0].text,'Sent by my existing harness session.');
 });
 test('async session creation can return only a session ID and future wakes target it',async t=>{
   let envelope;
@@ -88,4 +88,33 @@ test('connection, profile, deduplication and waiting callbacks survive a real re
   assert.equal(app.token,token);assert.equal(app.state().agents[0].session_id,'kept-thread');
   assert.equal(app.state().deliveries[0].id,before.deliveries[0].id);assert.equal(app.state().deliveries[0].status,'waiting');
   assert.equal(app.store.ingest(event()),0);
+});
+test('callbacks keep a fixed deadline and conflicting duplicate results cannot post again',async t=>{
+  let envelope;const {app,api,slack}=await appFixture(t,{dispatchRun:async(_a,e)=>{envelope=e;return{pending:true};}});
+  await api('/api/agents','PUT',agentInput());const raw=Buffer.from(JSON.stringify(event()));
+  await fetch(app.state().webhook_url,{method:'POST',headers:signed(raw),body:raw});await eventually(()=>app.state().deliveries[0]?.status==='waiting');
+  const complete=reply=>fetch(envelope.callback.url,{method:'POST',headers:{Authorization:`Bearer ${envelope.callback.token}`},body:JSON.stringify({reply})});
+  app.store.updateJob(envelope.delivery_id,{callback_expires_at:Date.now()-1});app.engine.tick();assert.equal((await complete('Too late')).status,400);assert.equal(slack.posts.length,0);
+  await api(`/api/deliveries/${envelope.delivery_id}/retry`,'POST',{});await eventually(()=>app.state().deliveries[0].status==='waiting');
+  assert.equal((await complete('Accepted')).status,200);await eventually(()=>slack.posts.length===1);
+  assert.equal((await complete('A different reply')).status,400);assert.equal(slack.posts.length,1);
+});
+test('malformed management payloads are rejected and authenticated graceful shutdown is idempotent',async t=>{
+  const {app,api}=await appFixture(t,{dispatchRun:async()=>({pending:true})});
+  for(const value of [null,[],true,'text']){
+    const result=await api('/api/pause','POST',value);assert.equal(result.response.status,400);assert.match(result.data.error,/JSON object/);
+  }
+  assert.equal((await fetch(app.url+'/api/shutdown',{method:'POST',body:'{}'})).status,401);
+  await api('/api/agents','PUT',agentInput());app.store.ingest(event());
+  assert.equal((await api('/api/shutdown','POST',{only_if_idle:true})).response.status,400);
+  assert.equal((await api('/api/shutdown','POST',{})).response.status,202);
+  await app.close();await app.close();
+});
+test('public HTTPS settings links and bot/user manifests match the intended identity',async t=>{
+  const {api}=await appFixture(t);
+  await api('/api/public-url','PUT',{url:'https://connector.example'});
+  const setup=(await api('/api/setup','POST',{})).data;assert.match(setup.settings_url,/^https:\/\/connector\.example\/settings#ticket=/);
+  const bot=(await api('/api/manifest?identity=bot')).data,user=(await api('/api/manifest?identity=user')).data;
+  assert.ok(bot.oauth_config.scopes.bot.includes('app_mentions:read'));assert.ok(bot.features.bot_user);
+  assert.ok(user.oauth_config.scopes.user.includes('chat:write'));assert.equal(user.features,undefined);
 });

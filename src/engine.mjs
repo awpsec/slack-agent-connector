@@ -13,23 +13,27 @@ export class Engine {
     for (const [id, active] of this.active) {
       if (!this.store.current(this.store.job(id))) active.controller.abort();
     }
-    // Async harness sessions remain busy until their callback finishes or expires.
-    const waitingKeys = new Set();
-    for (const row of this.store.db.prepare("SELECT * FROM jobs WHERE status='waiting'").all()) {
-      const agent = this.store.agent(row.agent_id);
-      if (!this.store.current(row)) this.store.updateJob(row.id, { status: 'cancelled' });
-      else if (row.updated + 30 * 60 * 1000 < Date.now()) this.store.updateJob(row.id, { status: 'failed', error: 'Harness callback timed out.' });
-      else waitingKeys.add(this.store.sessionKey(agent));
-    }
-    for (const job of this.store.pending()) {
-      if (this.active.size >= this.concurrency) break;
-      if (this.active.has(job.id) || job.status === 'waiting') continue;
-      if (!this.store.current(job)) { this.store.updateJob(job.id, { status: 'cancelled' }); continue; }
-      const agent = this.store.agent(job.agent_id), key = this.store.sessionKey(agent);
-      if (waitingKeys.has(key) || [...this.active.values()].some(a => a.key === key)) continue;
+    // Consider the head of every conversation, including delayed/failed work.
+    // Otherwise a retry delay can let later messages start a different session.
+    const heads = new Set(), busy = new Set([...this.active.values()].flatMap(a => a.keys));
+    for (const job of this.store.unfinished()) {
+      if (!this.store.policyCurrent(job)) {
+        if (job.status !== 'sending') this.store.updateJob(job.id, { status: 'cancelled' });
+        continue;
+      }
+      const agent = this.store.agent(job.agent_id), keys = this.store.jobKeys(job,agent);
+      const behind = keys.some(key => heads.has(key));
+      keys.forEach(key => heads.add(key));
+      if (behind || this.active.has(job.id) || keys.some(key => busy.has(key))) continue;
+      if (job.status === 'waiting' && job.callback_expires_at < Date.now()) {
+        this.store.updateJob(job.id,{status:'failed',error:'Harness callback timed out. Retry or dismiss this delivery to continue the conversation.'});
+        continue;
+      }
+      if (!['queued','reply_ready'].includes(job.status) || job.next_at > Date.now() || this.active.size >= this.concurrency) continue;
       const controller = new AbortController();
-      const active = { key, controller };
+      const active = { keys, controller };
       this.active.set(job.id, active);
+      keys.forEach(key => busy.add(key));
       active.promise = this.process(job, agent, controller.signal).catch(() => {
         if (this.store.current(job)) this.store.updateJob(job.id, { status: 'failed', error: 'Unexpected delivery failure.' });
       }).finally(() => { this.active.delete(job.id); if (!this.closed) this.tick(); });
@@ -37,14 +41,15 @@ export class Engine {
   }
   async process(job, agent, signal) {
     if (job.status === 'reply_ready') return this.send(job);
-    this.store.updateJob(job.id, { status: 'running', attempts: job.attempts + 1 });
+    const targetSession = this.store.targetSession(agent,job.session_key);
+    this.store.updateJob(job.id, { status: 'running', attempts: job.attempts + 1, target_session: targetSession, callback_expires_at: Date.now()+1800000 });
     const event = JSON.parse(job.event), connection = this.store.get('slack');
     try {
       const creating = event.type === 'session.create';
       const context = creating ? [] : await this.slack.context(connection.token, event);
       if (!this.store.current(job) || signal.aborted) return;
       const channelInstructions = creating ? '' : ruleFor(agent, event)?.instructions;
-      const envelope = { version: '1', type: creating ? 'session.create' : 'slack.message', delivery_id: job.id, agent: { id: agent.id, name: agent.name, session_id: agent.session_id || null },
+      const envelope = { version: '1', type: creating ? 'session.create' : 'slack.message', delivery_id: job.id, agent: { id: agent.id, name: agent.name, session_id: targetSession, session_scope: agent.session_scope || 'profile', conversation_key: job.session_key },
         identity: connection.identity, instructions: agent.instructions + (channelInstructions ? `\n\nChannel instructions:\n${channelInstructions}` : ''), slack: creating ? null : event, context,
         callback: { url: `${this.callbackBase()}/api/deliveries/${job.id}/complete`, token: job.callback_token, expires_in_seconds: 1800 } };
       const result = await this.dispatchRun(agent.adapter, envelope, { signal });
@@ -62,7 +67,7 @@ export class Engine {
       if (!this.store.current(job) || current.status !== 'running') return;
       // A local process may have used other harness tools before it failed.
       // HTTP bridges have an explicit idempotency contract; CLI processes do not.
-      const retry = agent.adapter.type === 'webhook' && current.attempts < 3;
+      const retry = agent.adapter.type === 'webhook' && current.attempts < 3 && !error.status && error.retryable !== false;
       this.store.updateJob(job.id, { status: retry ? 'queued' : 'failed', error: error.message,
         next_at: Date.now() + Math.min(60000, 2000 * 2 ** current.attempts) });
     }
@@ -71,19 +76,27 @@ export class Engine {
     const creating = JSON.parse(job.event).type === 'session.create';
     const result = verifyAdapterReply(creating ? { ...raw, reply: null } : raw);
     requireValue(!creating || result.session_id, 'The harness must return session_id when creating a session.');
-    requireValue(this.store.current(job), 'This delivery was cancelled, changed, or already completed.');
     const current = this.store.job(job.id);
+    requireValue(current, 'Delivery not found.');
+    if (['reply_ready','sending','done','skipped','send_failed','uncertain'].includes(current.status)) {
+      requireValue(current.reply === result.reply && (!result.session_id || result.session_id === current.response_session), 'This delivery already received a different result.');
+      return { duplicate: true };
+    }
+    requireValue(this.store.current(job), 'This delivery was cancelled or its settings changed.');
     requireValue(['running', 'waiting'].includes(current.status), 'This delivery has already received a reply.');
+    requireValue(current.callback_expires_at >= Date.now(), 'The delivery callback expired.');
+    requireValue(!current.target_session || !result.session_id || result.session_id === current.target_session, 'The harness returned a different session ID while resuming. The existing context binding was preserved.');
+    requireValue(current.session_key === 'profile' || result.session_id || current.target_session, 'Return a session ID so this conversation can keep its context.');
     this.store.transaction(() => {
-      this.store.updateJob(job.id, { status: creating ? 'done' : result.reply ? 'reply_ready' : 'skipped', reply: result.reply, error: '', next_at: 0 });
       if (result.session_id) {
         const agent = this.store.agent(job.agent_id);
-        agent.session_id = result.session_id;
-        this.store.db.prepare('UPDATE agents SET body=? WHERE id=?').run(JSON.stringify(agent), agent.id);
+        this.store.bindSession(agent,current.session_key,result.session_id);
         const active = this.active.get(job.id);
-        if (active) active.key = this.store.sessionKey(agent);
+        if (active) active.keys = [...new Set([...active.keys,...this.store.jobKeys(current,agent)])];
       }
+      this.store.updateJob(job.id, { status: creating ? 'done' : result.reply ? 'reply_ready' : 'skipped', reply: result.reply, response_session: result.session_id || current.target_session, error: '', next_at: 0 });
     });
+    return { duplicate: false };
   }
   async send(job) {
     if (!this.store.current(job) || this.store.job(job.id).status !== 'reply_ready') return;
@@ -91,7 +104,7 @@ export class Engine {
     try {
       const event = JSON.parse(job.event);
       await this.slack.post(this.store.get('slack').token, event, job.reply, job.id);
-      this.store.participate(event.channel_id, event.thread_ts);
+      if (this.store.policyCurrent(job)) this.store.participate(job.agent_id,event.channel_id,event.thread_ts);
       this.store.updateJob(job.id, { status: 'done', error: '' });
     } catch (error) {
       this.store.updateJob(job.id, { status: error.uncertain ? 'uncertain' : error.retryAfter ? 'reply_ready' : 'send_failed',

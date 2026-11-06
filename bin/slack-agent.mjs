@@ -43,11 +43,16 @@ try {
     const { ensureDaemon, requestApi } = await import('../src/mcp.mjs');
     const setup = await requestApi(await ensureDaemon(directory), '/api/setup', 'POST', {});
     console.log(setup.settings_url);
+  } else if (command === 'stop') {
+    const { access, requestApi } = await import('../src/mcp.mjs');
+    const connection = await access(directory);
+    await requestApi(connection,'/api/shutdown','POST',{});
+    console.log('Connector receiver is stopping. Profile settings and queued work are retained.');
   } else if (command === 'config') {
     const entry = fileURLToPath(import.meta.url);
     console.log(JSON.stringify({ mcpServers: { slack: { command: process.execPath, args: [entry, 'mcp', '--data', directory] } } }, null, 2));
     console.log(`\nCodex config.toml:\n[mcp_servers.slack]\ncommand = ${JSON.stringify(process.execPath)}\nargs = ${JSON.stringify([entry,'mcp','--data',directory])}`);
   } else {
-    console.log(`Slack Agent Connector\n\nCommands:\n  install   Register with this harness and begin private Slack setup\n  serve     Run the background event receiver and settings\n  mcp       Connect any stdio MCP harness; starts the receiver if needed\n  settings  Print a fresh settings sign-in link\n  config    Print Claude Code / MCP JSON and Codex TOML configuration\n\nOptions:\n  --harness <name>    For install: auto, claude, codex, pi, omp, or mcp\n  --profile <name>    Isolate a Slack identity and its receiver\n  --data <directory>  Connector data directory\n  --cwd <directory>   Teammate working directory for install\n  --dry-run          Show an install plan without changing settings\n  --no-start         Install without starting setup\n  --json             Return installer output as JSON\n  --port <port>       Receiver port for serve (default 4037)\n  --host <address>    Bind address for serve (default 127.0.0.1)\n  --no-autostart      For mcp, require an existing receiver\n`);
+    console.log(`Slack Agent Connector\n\nCommands:\n  install   Register with this harness and begin private Slack setup\n  serve     Run the background event receiver and settings\n  stop      Gracefully stop this profile's receiver and retain its data\n  mcp       Connect any stdio MCP harness; starts the receiver if needed\n  settings  Print a fresh settings sign-in link\n  config    Print Claude Code / MCP JSON and Codex TOML configuration\n\nOptions:\n  --harness <name>    For install: auto, claude, codex, pi, omp, or mcp\n  --profile <name>    Isolate a Slack identity and its receiver\n  --data <directory>  Connector data directory\n  --cwd <directory>   Teammate working directory for install\n  --dry-run          Show an install plan without changing settings\n  --no-start         Install without starting setup\n  --json             Return installer output as JSON\n  --port <port>       Receiver port for serve (default 4037)\n  --host <address>    Bind address for serve (default 127.0.0.1)\n  --no-autostart      For mcp, require an existing receiver\n`);
   }
 } catch (error) { console.error(error.message); process.exitCode = 1; }

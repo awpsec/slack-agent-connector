@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ensureDaemon, requestApi } from './mcp.mjs';
+import { VERSION } from './version.mjs';
 
 export const HARNESS_NAMES = ['claude', 'codex', 'pi', 'omp', 'mcp'];
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -67,7 +68,7 @@ async function writeExtensionPackage(directory, profile) {
   await mkdir(path, { recursive: true, mode: 0o700 });
   const shared = pathToFileURL(join(root, 'src', 'extension-tools.mjs')).href;
   const options = JSON.stringify({ directory });
-  await writeFile(join(path, 'package.json'), JSON.stringify({ name: `slack-agent-connector-${profile}`, version: '0.1.0', private: true, type: 'module',
+  await writeFile(join(path, 'package.json'), JSON.stringify({ name: `slack-agent-connector-${profile}`, version: VERSION, private: true, type: 'module',
     pi: { extensions: ['./pi.js'] }, omp: { extensions: ['./omp.js'] } }, null, 2), { mode: 0o600 });
   await writeFile(join(path, 'pi.js'), `import { Type } from '@sinclair/typebox';\nimport { registerSlackExtension } from ${JSON.stringify(shared)};\nexport default api => registerSlackExtension(api, Type, ${options});\n`, { mode: 0o600 });
   await writeFile(join(path, 'omp.js'), `import { registerSlackExtension } from ${JSON.stringify(shared)};\nexport default api => registerSlackExtension(api, api.typebox.Type, ${options});\n`, { mode: 0o600 });
@@ -111,7 +112,7 @@ export async function installConnector({ harness = 'auto', directory, profile = 
   const receipt = { ...plan, installed_at: new Date().toISOString(), setup_started: false };
   await writeFile(join(directory, 'installation.json'), JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600 });
   if (start) {
-    const connection = await connect(directory);
+    const connection = await connect(directory,{upgrade:true});
     const state = await request(connection, '/api/state');
     if (!state.agents.length && harness !== 'mcp') {
       const saved = await request(connection, '/api/agents', 'PUT', { name: 'Slack teammate', enabled: false,

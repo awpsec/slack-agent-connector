@@ -52,8 +52,12 @@ Explain that the webhook must have a public HTTPS base URL before Slack can deli
 
 Use the user's requested channels, wake behavior, teammate instructions, and session choice to configure the profile through the connector tools/settings. Enable the profile when that setup is complete. If the user has not chosen those preferences yet, begin with the settings link and ask only for the missing preferences. Do not start a paid model turn merely to test installation.
 
+Choose `session_scope` to match the requested context: `profile` shares one session, `channel` separates channels/DMs, and `thread` separates Slack threads. Channel/thread scope leaves `session_id` empty and creates bindings on the first matching message. When editing an existing profile, omit `session_id` to preserve its current binding. Clear a bound profile session only when a fresh session was requested, by sending both `session_id: ""` and `reset_session: true`.
+
 ## 5. Verify the result
 
 Verify the installed registration and that `/api/state` on the local receiver responds using the local owner credentials. Do not print or copy those credentials into the conversation. Native pi/omp tools use the same management API as MCP, plus `slack_current_session` to inspect their current session ID.
 
 Summarize the harness registration, the private setup link, and the exact remaining Slack connection step. Once connected, a real Slack mention is the final delivery check. Session execution uses the harness's existing tools and connectors; a separate cloud service is not required.
+
+When updating an existing installation, re-run the installer from the updated checkout. A source/receiver version mismatch is an error until the receiver restarts. The installer upgrades an idle receiver when its shutdown endpoint is available. Resolve pending work first. For v0.1 receivers, stop the original foreground process or use its process manager, then re-run installation; do not kill an unverified PID. `slack-agent stop` gracefully stops receivers that support the shutdown endpoint and retains their profile data.

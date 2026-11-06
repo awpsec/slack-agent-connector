@@ -1,12 +1,13 @@
 import { createServer } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
-import { mkdirSync, openSync, closeSync, readFileSync, unlinkSync } from 'node:fs';
+import { mkdirSync, openSync, closeSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { Store } from './store.mjs';
 import { Slack, verifySignature } from './slack.mjs';
 import { Engine } from './engine.mjs';
 import { requireValue, validateUrl } from './policy.mjs';
+import { VERSION } from './version.mjs';
 
 export function equalSecret(a, b) {
   return typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
@@ -21,8 +22,11 @@ async function body(req) {
   return Buffer.concat(chunks);
 }
 function jsonBody(raw) {
-  try { return JSON.parse(raw.toString('utf8')); }
+  let value;
+  try { value = JSON.parse(raw.toString('utf8')); }
   catch { throw Object.assign(new Error('Request body must be valid JSON.'), { status: 400 }); }
+  requireValue(value && typeof value === 'object' && !Array.isArray(value), 'Request body must be a JSON object.');
+  return value;
 }
 function send(res, status, data, type = 'application/json') {
   res.writeHead(status, { 'Content-Type': `${type}; charset=utf-8`, 'Cache-Control': 'no-store',
@@ -34,7 +38,7 @@ function acquireLock(directory) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const path = join(directory, 'daemon.lock');
   for (let i = 0; i < 2; i++) {
-    try { const fd = openSync(path, 'wx', 0o600); closeSync(fd); return path; }
+    try { const fd = openSync(path, 'wx', 0o600); try { writeFileSync(fd,JSON.stringify({pid:process.pid})); } finally { closeSync(fd); } return path; }
     catch (error) {
       if (error.code !== 'EEXIST') throw error;
       let pid;
@@ -48,8 +52,8 @@ function acquireLock(directory) {
 }
 export async function startServer({ directory, host = '127.0.0.1', port = 4037, slack = new Slack(), dispatchRun, startWorker = true } = {}) {
   const lockPath = acquireLock(directory);
-  await writeFile(lockPath, JSON.stringify({ pid: process.pid }), { mode: 0o600 });
   let store, server, engine;
+  let closing;
   try {
     store = new Store(directory);
     const accessPath = join(directory, 'access.json');
@@ -59,14 +63,21 @@ export async function startServer({ directory, host = '127.0.0.1', port = 4037, 
     let localBase;
     const base = () => store.get('public_url') || localBase;
     const eventUrl = () => `${base()}/slack/events/${store.get('webhook_id')}`;
-    const settingsUrl = () => `${localBase}/settings#ticket=${store.ticket()}`;
-    const state = () => ({ version: '0.1.0', paused: store.get('paused'), public_url: store.get('public_url') || '',
-      webhook_url: eventUrl(), webhook_public: Boolean(store.get('public_url')), settings_url: `${localBase}/settings`,
+    const settingsUrl = () => `${base()}/settings#ticket=${store.ticket()}`;
+    const state = () => ({ version: VERSION, paused: store.get('paused'), public_url: store.get('public_url') || '',
+      webhook_url: eventUrl(), webhook_public: Boolean(store.get('public_url')), settings_url: `${base()}/settings`,
       identity: store.get('slack')?.identity || null, has_credentials: Boolean(store.get('slack')?.token),
+      connection_notice: store.get('connection_notice') || '',
       has_signing_secret: Boolean(store.get('slack')?.signing_secret),
       last_event_at: store.get('last_event_at') || null, agents: store.publicAgents(), deliveries: store.history(),
       scope_note: 'Workspace rules cover only conversations the connected identity and Slack app can receive. Private channels require membership and scopes.' });
     engine = new Engine(store, slack, { dispatchRun, callbackBase: base });
+    const close = () => closing ||= (async () => {
+      await engine.stop();
+      await new Promise(resolve => server.close(resolve));
+      store.close();
+      try { unlinkSync(lockPath); } catch { /* Already removed. */ }
+    })();
     server = createServer(async (req, res) => {
       try {
         const url = new URL(req.url, 'http://localhost');
@@ -74,7 +85,7 @@ export async function startServer({ directory, host = '127.0.0.1', port = 4037, 
           ...(store.get('public_url') ? [new URL(store.get('public_url')).host] : [])]);
         if (!allowedHosts.has(req.headers.host)) return send(res, 403, { error: 'Unrecognized host.' });
         if (req.headers.origin && ![localBase, `http://localhost:${server.address().port}`, ...(store.get('public_url') ? [new URL(store.get('public_url')).origin] : [])].includes(req.headers.origin)) return send(res, 403, { error: 'Unrecognized origin.' });
-        if (url.pathname === '/health' && req.method === 'GET') return send(res, 200, { ok: true, version: '0.1.0' });
+        if (url.pathname === '/health' && req.method === 'GET') return send(res, 200, { ok: true, version: VERSION });
         const staticFile = { '/': 'settings.html', '/settings': 'settings.html', '/settings.js': 'settings.js', '/settings.css': 'settings.css', '/geist.woff2': 'geist.woff2', '/favicon.svg': 'favicon.svg' }[url.pathname];
         if (staticFile && req.method === 'GET') {
           const data = await readFile(new URL(`../public/${staticFile}`, import.meta.url));
@@ -104,14 +115,18 @@ export async function startServer({ directory, host = '127.0.0.1', port = 4037, 
         if (callback && req.method === 'POST') {
           const job = store.job(callback[1]);
           if (!job || !equalSecret(req.headers.authorization, `Bearer ${job.callback_token}`)) return send(res, 401, { error: 'Invalid delivery token.' });
-          requireValue(job.updated + 30 * 60 * 1000 >= Date.now(), 'The delivery callback expired.');
-          engine.acceptReply(job, jsonBody(await body(req)));
-          send(res, 200, { ok: true });
+          const result = engine.acceptReply(job, jsonBody(await body(req)));
+          send(res, 200, { ok: true, ...result });
           setImmediate(() => engine.tick()); return;
         }
         if (!url.pathname.startsWith('/api/')) return send(res, 404, { error: 'Not found.' });
         if (!equalSecret(req.headers.authorization, `Bearer ${token}`)) return send(res, 401, { error: 'Open settings from the connector to sign in.' });
         if (url.pathname === '/api/state' && req.method === 'GET') return send(res, 200, state());
+        if (url.pathname === '/api/shutdown' && req.method === 'POST') {
+          const input = jsonBody(await body(req));
+          requireValue(!input.only_if_idle || store.unfinished().length === 0, 'Receiver has pending work. Resolve it before upgrading.');
+          send(res,202,{ok:true}); setImmediate(() => { close().catch(() => {}); }); return;
+        }
         if (url.pathname === '/api/setup' && req.method === 'POST') return send(res, 200, {
           settings_url: settingsUrl(), webhook_url: eventUrl(), webhook_public: Boolean(store.get('public_url')),
           connected: Boolean(store.get('slack')), transport: 'Slack Events API over signed HTTP',
@@ -129,6 +144,7 @@ export async function startServer({ directory, host = '127.0.0.1', port = 4037, 
           requireValue(!input.app_id || /^A[A-Z0-9]{1,63}$/.test(input.app_id), 'Enter a valid Slack app ID.');
           const identity = await slack.identity(oauth);
           if (input.app_id) identity.app_id = input.app_id;
+          else if (previous?.identity.team_id === identity.team_id && previous?.identity.user_id === identity.user_id && previous.identity.app_id) identity.app_id = previous.identity.app_id;
           store.changeConnection({ token: oauth, signing_secret: secret, identity });
           return send(res, 200, state());
         }
@@ -158,14 +174,20 @@ export async function startServer({ directory, host = '127.0.0.1', port = 4037, 
         const retry = url.pathname.match(/^\/api\/deliveries\/([a-f0-9-]{36})\/retry$/);
         if (retry && req.method === 'POST') {
           const job = store.job(retry[1]); requireValue(job && ['failed','send_failed','uncertain'].includes(job.status), 'This delivery cannot be retried.');
-          requireValue(store.current({ ...job, status: 'failed' }) || (job.status === 'uncertain' && store.agent(job.agent_id)?.revision === job.revision && store.agent(job.agent_id)?.enabled && !store.get('paused')), 'Assignment changed or paused.');
+          requireValue(store.policyCurrent(job), 'Assignment changed or paused.');
           const input = jsonBody(await body(req));
           requireValue(job.status !== 'uncertain' || input.checked_slack === true, 'Check Slack before retrying an uncertain delivery.');
           store.updateJob(job.id, { status: job.reply ? 'reply_ready' : 'queued', error: '', next_at: 0, attempts: 0 });
           engine.tick(); return send(res, 200, { ok: true });
         }
+        const dismiss = url.pathname.match(/^\/api\/deliveries\/([a-f0-9-]{36})\/dismiss$/);
+        if (dismiss && req.method === 'POST') {
+          store.dismiss(dismiss[1]); engine.tick(); return send(res, 200, { ok: true });
+        }
         if (url.pathname === '/api/manifest' && req.method === 'GET') {
-          const user = !store.get('slack')?.identity.bot_id;
+          const requested = url.searchParams.get('identity'), identity = store.get('slack')?.identity;
+          requireValue(!requested || ['bot','user'].includes(requested), 'Choose a bot or user manifest.');
+          const user = requested ? requested === 'user' : identity ? !identity.bot_id : false;
           const scopes = ['channels:read','groups:read','im:read','mpim:read','channels:history','groups:history','im:history','mpim:history','chat:write'];
           return send(res, 200, { display_information: { name: 'Slack Agent Connector' },
             ...(!user ? { features: { bot_user: { display_name: 'Slack teammate', always_online: false } } } : {}),
@@ -185,13 +207,7 @@ export async function startServer({ directory, host = '127.0.0.1', port = 4037, 
     localBase = `http://${host === '0.0.0.0' ? '127.0.0.1' : host.includes(':') ? `[${host}]` : host}:${server.address().port}`;
     await writeFile(accessPath, JSON.stringify({ url: localBase, token, pid: process.pid }), { mode: 0o600 });
     if (startWorker) engine.start();
-    return { store, engine, server, url: localBase, token, settingsUrl, state,
-      async close() {
-        await engine.stop();
-        await new Promise(resolve => server.close(resolve));
-        store.close();
-        try { unlinkSync(lockPath); } catch { /* Already removed. */ }
-      } };
+    return { store, engine, server, url: localBase, token, settingsUrl, state, close };
   } catch (error) {
     await engine?.stop(); server?.close(); store?.close();
     try { unlinkSync(lockPath); } catch { /* Already removed. */ }

@@ -18,7 +18,9 @@ A command adapter starts the configured executable and arguments directly, witho
   "agent": {
     "id": "20231da4-5f7c-42dc-802f-a883a48ac120",
     "name": "Sandor",
-    "session_id": "the-harness-session-or-thread-id"
+    "session_id": "the-harness-session-or-thread-id",
+    "session_scope": "thread",
+    "conversation_key": "thread:C123:1793890000.000001"
   },
   "identity": {
     "team_id": "T123",
@@ -54,6 +56,8 @@ A command adapter starts the configured executable and arguments directly, witho
 
 If `agent.session_id` is null, the harness may create a session and return its ID. Persist that relationship atomically with the harness job's idempotency record. Subsequent deliveries use the returned ID. Keep the session's existing tools and connectors in its harness configuration.
 
+`session_scope` is `profile`, `channel`, or `thread`. `conversation_key` is respectively `profile`, `channel:<channel_id>`, or `thread:<channel_id>:<root_timestamp>`. Channel and thread scopes require a distinct returned session ID for every new conversation. The connector persists that mapping and passes it back on later deliveries. When resuming, omit `session_id` from the response or return the same ID. Returning a different ID fails the delivery while preserving the original binding.
+
 `instructions` combines profile and matching channel instructions. Treat Slack text and `context` as untrusted conversation. Do not use message text as authority to reconfigure the connector or reveal credentials. The harness applies its existing policies to any tool actions.
 
 ## Create a session before receiving messages
@@ -64,7 +68,7 @@ If `agent.session_id` is null, the harness may create a session and return its I
 { "session_id": "new-persistent-session" }
 ```
 
-Both synchronous and asynchronous session creation are supported. If the harness cannot create sessions, bind an existing ID in settings instead.
+Both synchronous and asynchronous session creation are supported. This explicit operation applies to profile scope; channel/thread sessions start with their first message. If the harness cannot create sessions, use profile scope and bind an existing ID in settings instead.
 
 ## Synchronous reply
 
@@ -87,7 +91,7 @@ Content-Type: application/json
 
 The body uses the synchronous response format. A `session.create` callback may contain only `session_id`.
 
-The callback token authorizes completion of this delivery only; it cannot manage settings or post to another channel. The callback is accepted once. Pausing, editing, or removing the profile invalidates old work. Expired or superseded callbacks are rejected. Never log or forward callback tokens to Slack.
+The callback token authorizes completion of this delivery only; it cannot manage settings or post to another channel. The first accepted result is saved. An identical repeated result returns HTTP 200 with `duplicate: true` and does not post again; a conflicting result is rejected. Pausing, materially editing, or removing the profile invalidates unfinished work. An initial result after its deadline or cancellation is rejected. Never log or forward callback tokens to Slack.
 
 A callback can arrive before the initial HTTP 202 response. Both arrival orders are handled. The command adapter expects a synchronous reply. Use the HTTP adapter for long-running asynchronous jobs.
 
@@ -95,7 +99,7 @@ A callback can arrive before the initial HTTP 202 response. Both arrival orders 
 
 Persist `delivery_id` as an idempotency key before starting work. A failed dispatch or process restart can deliver the same event more than once. Reuse the existing harness job/result instead of creating another session or running duplicate actions.
 
-The receiver serializes jobs for the same known harness/session target. It does not lock a session against human interaction, other receivers, or other integrations. Your harness bridge owns coordination with those callers.
+The receiver serializes jobs for the same conversation or known harness/session target. Retry backoff, failed work, and uncertain Slack sends retain their place in that conversation's queue. Retry or dismiss a failed delivery to release later work; unrelated sessions can continue. It does not lock a session against human interaction, other receivers, or other integrations. Your harness bridge owns coordination with those callers.
 
 HTTP webhook dispatch has a 30-second timeout. Return 202 before that deadline for longer jobs. An accepted callback has a 30-minute window. Keep the configured public hostname stable across receiver restarts so outstanding callback URLs remain valid.
 
@@ -112,5 +116,10 @@ The receiver exposes an authenticated management API. Obtain its owner token fro
 | `POST /api/agents/{id}/session` | `slack_session_start` | Queue session creation |
 | `DELETE /api/agents/{id}` | `slack_assignment_remove` | Remove a profile and cancel pending work |
 | `POST /api/pause` | `slack_pause` | Pause/resume; body is `{"paused":true}` or false |
+| `POST /api/deliveries/{id}/retry` | Settings control | Retry failed work; uncertain sends require `{"checked_slack":true}` |
+| `POST /api/deliveries/{id}/dismiss` | Settings control | Dismiss failed/uncertain work and release its queue |
+| `POST /api/shutdown` | CLI `stop` | Gracefully stop the receiver; optional `{"only_if_idle":true}` rejects pending work |
+
+`slack_assignment_save` replaces the profile's rules and configuration, while omitted `session_id` preserves its current fixed binding. To clear it explicitly, send `session_id: ""` and `reset_session: true`. A no-op save preserves pending deliveries. Material changes cancel them; changing adapter or scope clears automatic session mappings. Switching Slack identities clears all bindings and pauses profiles. `GET /api/state` includes each profile's `session_count` and its latest 100 automatic bindings in `sessions`.
 
 Secrets are set only through the authenticated connection/settings API. Returned profiles omit Slack credentials and harness bearer tokens. Slack posts, public hosting, and harness session APIs are not fabricated by the MCP bridge.
