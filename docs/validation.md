@@ -18,6 +18,7 @@ A command-bridge integration check launches actual child processes with disk-bac
 | --- | --- |
 | Existing Slack connection posts and reads a dedicated private test thread | Passed |
 | Fresh public GitHub checkout installs dependencies and begins generic MCP setup | Passed; one-time login, repeat installation, graceful stop, and restart also checked |
+| 2026-11-12 fresh v0.2.1 install and idle upgrade from a real v0.2.0 receiver | Passed; upgrade replaced the receiver process while preserving its port, owner credentials, profile, and fixed context binding |
 | Two new native Codex sessions retain different random markers on independent resume | Passed |
 | Native Claude Code creates a persistent session and recalls a random marker on resume | Passed; session ID retained |
 | 2026-11-12 Claude Code 2.1.323 recall check | Passed with an ordinary fictional-story fact and the same session ID. Two artificial random-marker probes returned an upstream model safety refusal on recall; those were recorded as failed probes |
