@@ -47,3 +47,16 @@ test('native session locks apply across working directories and selected configu
   const b=store.saveAgent(agentInput({session_id:'shared-global-id',adapter:{type:'codex',cwd:'/project-b',args:['--profile','two']}}));
   assert.equal(store.sessionKey(store.agent(a)),store.sessionKey(store.agent(b)));
 });
+
+test('blocked deliveries remain actionable after more than sixty newer deliveries',async t=>{
+  const {store}=await fixture(t);store.saveAgent(agentInput());const blocked=[];
+  for(let i=0;i<78;i++){
+    store.ingest(event({ts:`1000000000.${String(i+1).padStart(6,'0')}`}));
+    const job=store.unfinished().at(-1),status=['failed','send_failed','uncertain'][i] || 'done';
+    store.updateJob(job.id,{status});if(i<3)blocked.push(job.id);
+  }
+  const visible=store.history();
+  for(const id of blocked)assert.ok(visible.some(job=>job.id===id),'An older blocked delivery must still be visible.');
+  assert.ok(visible.length<=120);
+  store.dismiss(blocked[0]);assert.equal(store.history().some(job=>job.id===blocked[0]),false);
+});

@@ -53,7 +53,7 @@ function sessionFields() {
   $('start-session').hidden = !selected || scoped || Boolean($('session-id').value);
   $('session-summary').hidden = !scoped;
   $('session-bindings').hidden = !scoped;
-  $('session-help').textContent = scoped ? 'Separate sessions are created on the first matching message and reused for that channel or thread.' : 'Set an existing session ID, or let the harness return a new one. The harness owns its environment, credentials, and tools.';
+  $('session-help').textContent = scoped ? 'Separate sessions are created on the first matching message and reused for that channel or thread.' : 'Set an existing session ID, or let the harness return a new one. Changing the harness clears an inherited binding unless you set its target.';
 }
 function renderBindings(agent) {
   const list=$('session-list');list.replaceChildren();
@@ -81,7 +81,7 @@ function editProfile(agent = null) {
   selected = agent?.id || null; loadedRevision=agent?.revision; dirty = false; sessionEdited=false; $('profile-heading').textContent = agent ? agent.name : 'Create a teammate';
   $('profile-name').value = agent?.name || ''; $('enabled').checked = agent?.enabled ?? true; $('instructions').value = agent?.instructions || '';
   $('adapter-type').value = agent?.adapter.type || 'webhook'; $('harness-url').value = agent?.adapter.url || '';
-  $('harness-token').value = ''; $('harness-token').placeholder = agent?.adapter.has_token ? 'Saved · leave blank to keep' : 'Optional bearer token';
+  $('harness-token').value = ''; $('harness-token').placeholder = agent?.adapter.has_token ? 'Saved for this URL · leave blank to keep' : 'Optional bearer token';
   $('harness-cwd').value = agent?.adapter.cwd || ''; $('harness-command').value = agent?.adapter.command || ''; $('harness-args').value = JSON.stringify(agent?.adapter.args || []);
   $('session-id').value = agent?.session_id || ''; $('delete-profile').hidden = !agent; $('start-session').hidden = !agent || Boolean(agent.session_id);
   $('session-scope').value = agent?.session_scope || 'profile'; sessionFields();

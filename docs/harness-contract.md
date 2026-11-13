@@ -6,6 +6,8 @@ The bridge runs in the harness's environment. It owns session creation, session 
 
 An HTTP adapter sends a JSON POST to the configured URL. If a bearer token was saved in settings it is sent in `Authorization`. `Idempotency-Key` is the delivery's UUID. HTTPS is required except for localhost bridges. Redirects are rejected so tokens cannot be forwarded to another host.
 
+Saved bearer credentials are retained only while the webhook URL is unchanged. A new URL requires its own credential in private settings.
+
 A command adapter starts the configured executable and arguments directly, without a shell. One UTF-8 JSON object followed by a newline is written to stdin. Write one JSON response to stdout and diagnostic logs to stderr. The output limit is 2 MiB and the default process timeout is three minutes.
 
 ## Wake a session
@@ -120,6 +122,6 @@ The receiver exposes an authenticated management API. Obtain its owner token fro
 | `POST /api/deliveries/{id}/dismiss` | Settings control | Dismiss failed/uncertain work and release its queue |
 | `POST /api/shutdown` | CLI `stop` | Gracefully stop the receiver; optional `{"only_if_idle":true}` rejects pending work |
 
-`slack_assignment_save` replaces the profile's rules and configuration, while omitted `session_id` preserves its current fixed binding. To clear it explicitly, send `session_id: ""` and `reset_session: true`. A no-op save preserves pending deliveries. Material changes cancel them; changing adapter or scope clears automatic session mappings. Switching Slack identities clears all bindings and pauses profiles. `GET /api/state` includes each profile's `session_count` and its latest 100 automatic bindings in `sessions`.
+`slack_assignment_save` replaces the profile's rules and configuration, while omitted `session_id` preserves its current fixed binding when the adapter is unchanged. To clear it explicitly, send `session_id: ""` and `reset_session: true`. A no-op save preserves pending deliveries. Material changes cancel them; changing adapter or scope clears automatic session mappings. A changed adapter also clears an inherited fixed ID unless a nonempty target is explicitly supplied. Resetting/replacing a fixed session clears its old thread participation. Switching Slack identities clears all bindings and pauses profiles, including after disconnecting an older installation. `GET /api/state` includes each profile's `session_count` and its latest 100 automatic bindings in `sessions`. Its `deliveries` includes the newest 60 records and up to 60 of the oldest unresolved failures, ordered newest first.
 
 Secrets are set only through the authenticated connection/settings API. Returned profiles omit Slack credentials and harness bearer tokens. Slack posts, public hosting, and harness session APIs are not fabricated by the MCP bridge.

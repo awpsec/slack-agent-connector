@@ -112,3 +112,39 @@ test('an older settings snapshot cannot accidentally erase a newly created profi
   assert.equal(store.agent(id).session_id,'newly-created-session');
   store.saveAgent({...input,id,reset_session:true});assert.equal(store.agent(id).session_id,'');
 });
+
+test('disconnecting an older connection remembers its identity before a different account is linked',async t=>{
+  const {store}=await fixture(t),id=store.saveAgent(agentInput({session_id:'old-private-context'}));
+  assert.equal(store.get('last_identity_key'),undefined);
+  store.changeConnection(null);
+  store.changeConnection({identity:{...identity,user_id:'U999'},token:'different-account',signing_secret:secret});
+  assert.equal(store.agent(id).enabled,false);
+  assert.equal(store.agent(id).session_id,'');
+});
+
+test('changing the harness clears an inherited fixed session unless a new target is supplied',async t=>{
+  const {store}=await fixture(t),id=store.saveAgent(agentInput({session_id:'codex-context',adapter:{type:'codex',cwd:'/tmp'}}));
+  const edit={...agentInput({id,adapter:{type:'claude',cwd:'/tmp'}})};delete edit.session_id;
+  store.saveAgent(edit);assert.equal(store.agent(id).session_id,'');
+  store.saveAgent({...edit,session_id:'claude-context'});
+  store.saveAgent({...edit,adapter:{type:'codex',cwd:'/tmp'},session_id:'chosen-codex-context'});
+  assert.equal(store.agent(id).session_id,'chosen-codex-context');
+});
+
+test('resetting or replacing a fixed session ends the old sessions thread participation',async t=>{
+  const {store}=await fixture(t),input=agentInput({session_id:'first-session'}),id=store.saveAgent(input);
+  store.participate(id,'C123','1000000000.000001');
+  store.saveAgent({...input,id,session_id:'replacement-session'});
+  assert.equal(store.ingest(event({ts:'1000000000.000002',thread_ts:'1000000000.000001',text:'Unmentioned follow-up for the old teammate'})),0);
+  store.participate(id,'C123','1000000000.000001');
+  store.saveAgent({...input,id,session_id:'',reset_session:true});
+  assert.equal(store.ingest(event({ts:'1000000000.000003',thread_ts:'1000000000.000001',text:'Another old follow-up'})),0);
+});
+
+test('changing a webhook destination does not carry its saved bearer credential to the new endpoint',async t=>{
+  const {store}=await fixture(t),input=agentInput({adapter:{type:'webhook',url:'https://original.example/jobs',token:'original-endpoint-credential'}}),id=store.saveAgent(input);
+  store.saveAgent({...input,id,adapter:{type:'webhook',url:'https://original.example/jobs'}});
+  assert.equal(store.agent(id).adapter.token,'original-endpoint-credential');
+  store.saveAgent({...input,id,adapter:{type:'webhook',url:'https://different.example/jobs'}});
+  assert.equal(store.agent(id).adapter.token,'');
+});

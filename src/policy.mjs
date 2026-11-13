@@ -49,7 +49,7 @@ export function validateAgent(input, previous) {
   if (a.type === 'webhook') {
     adapter.url = validateUrl(a.url);
     requireValue(!a.token || (typeof a.token === 'string' && a.token.length <= 4096 && !/[\r\n]/.test(a.token)), 'Invalid webhook token.');
-    adapter.token = a.token || (previous?.adapter.type === 'webhook' ? previous.adapter.token : '') || '';
+    adapter.token = a.token || (previous?.adapter.type === 'webhook' && previous.adapter.url === adapter.url ? previous.adapter.token : '') || '';
   } else {
     requireValue(typeof a.cwd === 'string' && isAbsolute(a.cwd) && !a.cwd.includes('\0'), 'Choose an absolute working directory.');
     adapter.cwd = a.cwd;

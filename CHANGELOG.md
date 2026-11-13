@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1
+
+- Remember an older installation's identity across disconnect before linking another account.
+- Clear inherited fixed session IDs when changing harness environments unless a target is explicitly supplied.
+- End old thread participation when resetting or replacing a fixed session.
+- Keep older blocked deliveries visible alongside recent activity, with retry/dismiss controls.
+- Retain saved webhook credentials only for the same destination URL.
+- Add regression checks for each of these cases.
+
 ## 0.2.0
 
 - Add persistent sessions per profile, channel, or Slack thread, with visible conversation bindings.

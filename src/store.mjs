@@ -58,13 +58,19 @@ export class Store {
       !input.session_id && previous?.session_id && scope === 'profile' && !input.reset_session ? previous.session_id : input.session_id;
     const agent = validateAgent({ ...input, session_scope: scope, session_id: scope !== 'profile' && input.session_id === undefined ? '' : sessionId }, previous);
     const adapterKey = a => JSON.stringify([a.type,a.cwd || '',a.url || '',a.token || '',a.command || '',a.args || []]);
+    const adapterChanged = Boolean(previous && adapterKey(previous.adapter) !== adapterKey(agent.adapter));
+    // A binding belongs to its harness environment. Preserve it across ordinary
+    // edits, but require an explicit target when changing that environment.
+    if (adapterChanged && !input.session_id) agent.session_id = '';
     const comparable = a => JSON.stringify([a.name,a.enabled,a.instructions,a.session_id,a.session_scope || 'profile',adapterKey(a.adapter),a.rules.map(r=>[r.scope,r.channel_id || '',r.mode,r.instructions || ''])]);
     if (previous && comparable(previous) === comparable(agent)) return previous.id;
     return this.transaction(() => {
       this.db.prepare('INSERT INTO agents VALUES(?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(agent.id, JSON.stringify(agent));
       this.cancelPending(agent.id);
-      if (previous && (adapterKey(previous.adapter) !== adapterKey(agent.adapter) || (previous.session_scope || 'profile') !== agent.session_scope)) {
+      if (previous && (adapterChanged || (previous.session_scope || 'profile') !== agent.session_scope)) {
         this.db.prepare('DELETE FROM sessions WHERE agent_id=?').run(agent.id);
+      }
+      if (previous && (adapterChanged || previous.session_id !== agent.session_id || (previous.session_scope || 'profile') !== agent.session_scope)) {
         this.db.prepare('DELETE FROM threads WHERE agent_id=?').run(agent.id);
       }
       return agent.id;
@@ -92,7 +98,7 @@ export class Store {
         this.db.exec('DELETE FROM threads; DELETE FROM sessions');
       }
       this.set('slack', connection);
-      if (nextKey) this.set('last_identity_key', nextKey);
+      if (nextKey || previousKey) this.set('last_identity_key', nextKey || previousKey);
       this.set('connection_notice', changed ? 'Slack identity changed. Profiles were paused and session bindings cleared to keep account contexts separate.' : '');
       return changed;
     });
@@ -127,7 +133,12 @@ export class Store {
   }
   job(id) { return this.db.prepare('SELECT * FROM jobs WHERE id=?').get(id); }
   history() {
-    return this.db.prepare('SELECT id,agent_id,status,created,updated,attempts,error,session_key FROM jobs ORDER BY created DESC,rowid DESC LIMIT 60').all();
+    // Keep the oldest actionable failures visible even when unrelated sessions
+    // have produced more than a screenful of recent deliveries.
+    return this.db.prepare(`SELECT id,agent_id,status,created,updated,attempts,error,session_key FROM jobs
+      WHERE rowid IN (SELECT rowid FROM jobs ORDER BY created DESC,rowid DESC LIMIT 60)
+        OR rowid IN (SELECT rowid FROM jobs WHERE status IN ('failed','send_failed','uncertain') ORDER BY created,rowid LIMIT 60)
+      ORDER BY created DESC,rowid DESC`).all();
   }
   updateJob(id, values) {
     const allowed = new Set(['status','updated','attempts','next_at','reply','error','target_session','response_session','callback_expires_at']);
